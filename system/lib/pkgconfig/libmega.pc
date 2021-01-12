@@ -1,0 +1,14 @@
+prefix=/home/vagrant/MEGAcmd/system
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+platform_include=mega/posix
+
+Name: libmega
+Description: Mega SDK
+Version: 3.7.3
+Requires:
+Conflicts:
+Libs: -L${libdir} -lmega
+Libs.private: -lrt -ldl 
+Cflags: -I${includedir} -I${includedir}/mega -I${includedir}/${platform_include}
