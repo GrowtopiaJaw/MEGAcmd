@@ -50,6 +50,10 @@ const int MCMD_EVENT_UPDATE_START_ID = 98901;
 const char MCMD_EVENT_UPDATE_START_MESSAGE[] = "MEGAcmd auto-update start";
 const int MCMD_EVENT_UPDATE_RESTART_ID = 98902;
 const char MCMD_EVENT_UPDATE_RESTART_MESSAGE[] = "MEGAcmd updated requiring restart";
+const int MCMD_EVENT_FIRST_CONFIGURED_SYNC_ID = 98903;
+const char MCMD_EVENT_FIRST_CONFIGURED_SYNC_MESSAGE[] = "MEGAcmd first sync configured";
+const int MCMD_EVENT_WAITED_TOO_LONG_FOR_NODES_CURRENT = 98904;
+const char MCMD_EVENT_WAITED_TOO_LONG_FOR_NODES_CURRENT_MESSAGE[] = "MEGAcmd nodes current wait timed out";
 
 typedef struct sync_struct
 {
@@ -122,11 +126,18 @@ void informStateListener(std::string message, int clientID);
 void broadcastMessage(std::string message, bool keepIfNoListeners = false);
 void informStateListeners(std::string s);
 
+
+void removeDelayedBroadcastMatching(const std::string &toMatch);
+void broadcastDelayedMessage(std::string message, bool keepIfNoListeners);
+
 void appendGreetingStatusFirstListener(const std::string &msj);
 void removeGreetingStatusFirstListener(const std::string &msj);
 void appendGreetingStatusAllListener(const std::string &msj);
+void clearGreetingStatusAllListener();
+void clearGreetingStatusFirstListener();
 void removeGreetingStatusAllListener(const std::string &msj);
-
+void removeGreetingMatching(const std::string &toMatch);
+void removeDelayedBroadcastMatching(const std::string &toMatch);
 
 void setloginInAtStartup(bool value);
 void setBlocked(int value);

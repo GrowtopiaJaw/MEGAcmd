@@ -119,9 +119,14 @@ std::vector<MegaThread *> petitionThreads;
 std::vector<MegaThread *> endedPetitionThreads;
 MegaThread *threadRetryConnections;
 
+std::mutex greetingsmsgsMutex;
 std::deque<std::string> greetingsFirstClientMsgs; // to be given on first client to register as state listener
 std::deque<std::string> greetingsAllClientMsgs; // to be given on all clients when registering as state listener
-std::mutex greetingsmsgsMutex;
+
+
+std::deque<std::string> delayedBroadCastMessages; // messages to be brodcasted in a while
+std::mutex delayedBroadcastMutex;
+bool broadcastingDelayedMsgs = false;
 
 //Comunications Manager
 ComunicationsManager * cm;
@@ -195,6 +200,18 @@ void appendGreetingStatusAllListener(const std::string &msj)
 {
     std::lock_guard<std::mutex> g(greetingsmsgsMutex);
     greetingsAllClientMsgs.push_front(msj);
+}
+
+void clearGreetingStatusAllListener()
+{
+    std::lock_guard<std::mutex> g(greetingsmsgsMutex);
+    greetingsAllClientMsgs.clear();
+}
+
+void clearGreetingStatusFirstListener()
+{
+    std::lock_guard<std::mutex> g(greetingsmsgsMutex);
+    greetingsFirstClientMsgs.clear();
 }
 
 void removeGreetingStatusAllListener(const std::string &msj)
@@ -330,6 +347,62 @@ void broadcastMessage(string message, bool keepIfNoListeners)
     }
 }
 
+
+void removeDelayedBroadcastMatching(const string &toMatch)
+{
+    std::lock_guard<std::mutex> g(delayedBroadcastMutex);
+    for (auto it = delayedBroadCastMessages.begin(); it != delayedBroadCastMessages.end(); )
+    {
+        if ((*it).find(toMatch) != string::npos)
+        {
+            it = delayedBroadCastMessages.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+void removeGreetingMatching(const string &toMatch)
+{
+    std::lock_guard<std::mutex> g(greetingsmsgsMutex);
+    for (auto it = greetingsAllClientMsgs.begin(); it != greetingsAllClientMsgs.end(); )
+    {
+        if ((*it).find(toMatch) != string::npos)
+        {
+            it = greetingsAllClientMsgs.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+void broadcastDelayedMessage(string message, bool keepIfNoListeners)
+{
+    std::lock_guard<std::mutex> g(delayedBroadcastMutex);
+    delayedBroadCastMessages.push_back(message);
+    if (!broadcastingDelayedMsgs)
+    {
+        std::thread([keepIfNoListeners]()
+        {
+            broadcastingDelayedMsgs = true;
+            sleepSeconds(4);
+            std::lock_guard<std::mutex> g(delayedBroadcastMutex);
+            while (delayedBroadCastMessages.size())
+            {
+                auto msg = delayedBroadCastMessages.front();
+                delayedBroadCastMessages.pop_front();
+                broadcastMessage(msg, keepIfNoListeners);
+            }
+
+            broadcastingDelayedMsgs = false;
+        }).detach();
+    }
+}
+
 void informTransferUpdate(MegaTransfer *transfer, int clientID)
 {
     informProgressUpdate(transfer->getTransferredBytes(),transfer->getTotalBytes(), clientID);
@@ -365,7 +438,6 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
 
     validOptValues->insert("client-width");
 
-
     if ("ls" == thecommand)
     {
         validParams->insert("R");
@@ -375,6 +447,7 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
         validParams->insert("h");
         validParams->insert("show-handles");
         validParams->insert("versions");
+        validParams->insert("show-creation-time");
         validOptValues->insert("time-format");
         validParams->insert("tree");
 #ifdef USE_PCRE
@@ -473,7 +546,6 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
     {
         validParams->insert("a");
         validParams->insert("d");
-        validParams->insert("restart-syncs");
     }
 #ifdef HAVE_LIBUV
     else if ("webdav" == thecommand)
@@ -523,13 +595,24 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
         validParams->insert("d");
         validParams->insert("s");
         validParams->insert("r");
+
+        validParams->insert("enable");
+        validParams->insert("disable");
+        validParams->insert("remove");
+
+        validParams->insert("show-handles");
         validOptValues->insert("path-display-size");
+        validOptValues->insert("col-separator");
+        validOptValues->insert("output-cols");
+
     }
     else if ("export" == thecommand)
     {
         validParams->insert("a");
         validParams->insert("d");
         validParams->insert("f");
+        validParams->insert("writable");
+        validParams->insert("mega-hosted");
         validOptValues->insert("expire");
         validOptValues->insert("password");
 #ifdef USE_PCRE
@@ -554,12 +637,14 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
         validOptValues->insert("pattern");
         validOptValues->insert("l");
         validParams->insert("show-handles");
+        validParams->insert("print-only-handles");
 #ifdef USE_PCRE
         validParams->insert("use-pcre");
 #endif
         validOptValues->insert("mtime");
         validOptValues->insert("size");
         validOptValues->insert("time-format");
+        validOptValues->insert("type");
     }
     else if ("mkdir" == thecommand)
     {
@@ -567,6 +652,9 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
     }
     else if ("users" == thecommand)
     {
+        validParams->insert("help-verify");
+        validParams->insert("verify");
+        validParams->insert("unverify");
         validParams->insert("s");
         validParams->insert("h");
         validParams->insert("d");
@@ -595,6 +683,8 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
     {
         validParams->insert("d");
         validParams->insert("s");
+        validParams->insert("force-non-official");
+        validParams->insert("print-only-value");
     }
     else if ("userattr" == thecommand)
     {
@@ -648,6 +738,8 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
     {
         validOptValues->insert("clientID");
         validOptValues->insert("auth-code");
+        validOptValues->insert("auth-key");
+        validOptValues->insert("password");
     }
     else if ("psa" == thecommand)
     {
@@ -657,6 +749,24 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
     {
         validOptValues->insert("clientID");
     }
+#ifdef HAVE_DOWNLOADS_COMMAND
+    else if ("downloads" == thecommand)
+    {
+        validParams->insert("show-subtransfers");
+        validParams->insert("report-all");
+        validParams->insert("disable-tracking");
+        validParams->insert("enable-tracking");
+        validParams->insert("query-enabled");
+
+        validParams->insert("enable-clean-slate");
+        validParams->insert("disable-clean-slate");
+        validParams->insert("purge");
+
+        validOptValues->insert("path-display-size");
+        validOptValues->insert("col-separator");
+        validOptValues->insert("output-cols");
+    }
+#endif
     else if ("transfers" == thecommand)
     {
         validParams->insert("show-completed");
@@ -671,6 +781,8 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
         validParams->insert("r");
         validOptValues->insert("limit");
         validOptValues->insert("path-display-size");
+        validOptValues->insert("col-separator");
+        validOptValues->insert("output-cols");
     }
     else if ("proxy" == thecommand)
     {
@@ -678,6 +790,10 @@ void insertValidParamsPerCommand(set<string> *validParams, string thecommand, se
         validParams->insert("none");
         validOptValues->insert("username");
         validOptValues->insert("password");
+    }
+    else if ("confirm" == thecommand)
+    {
+        validParams->insert("security");
     }
     else if ("exit" == thecommand || "quit" == thecommand)
     {
@@ -1370,11 +1486,15 @@ const char * getUsageStr(const char *command)
     {
         if (interactiveThread())
         {
-            return "login [--auth-code=XXXX] [email [password]] | exportedfolderurl#key | session";
+            return "login [--auth-code=XXXX] [email [password]] | exportedfolderurl#key"
+                    " [--auth-key=XXXX] | passwordprotectedlink [--password=PASSWORD]"
+                   " | session";
         }
         else
         {
-            return "login [--auth-code=XXXX] email password | exportedfolderurl#key | session";
+            return "login [--auth-code=XXXX] email password | exportedfolderurl#key"
+                    " [--auth-key=XXXX] | passwordprotectedlink [--password=PASSWORD]"
+                   " | session";
         }
     }
     if (!strcmp(command, "psa"))
@@ -1446,11 +1566,11 @@ const char * getUsageStr(const char *command)
 #endif
     if (!strcmp(command, "ls"))
     {
+        return "ls [-halRr] [--show-handles] [--tree] [--versions] [remotepath]"
 #ifdef USE_PCRE
-        return "ls [-halRr] [--show-handles] [--tree] [--versions] [remotepath] [--use-pcre] [--time-format=FORMAT]";
-#else
-        return "ls [-halRr] [--show-handles] [--tree] [--versions] [remotepath] [--time-format=FORMAT]";
+        " [--use-pcre]"
 #endif
+        " [--show-creation-time] [--time-format=FORMAT]";
     }
     if (!strcmp(command, "tree"))
     {
@@ -1514,7 +1634,7 @@ const char * getUsageStr(const char *command)
     }
     if (!strcmp(command, "attr"))
     {
-        return "attr remotepath [-s attribute value|-d attribute]";
+        return "attr remotepath [--force-non-officialficial] [-s attribute value|-d attribute [--print-only-value]";
     }
     if (!strcmp(command, "userattr"))
     {
@@ -1559,7 +1679,7 @@ const char * getUsageStr(const char *command)
     }
     if (!strcmp(command, "exclude"))
     {
-        return "exclude [(-a|-d) pattern1 pattern2 pattern3 [--restart-syncs]]";
+        return "exclude [(-a|-d) pattern1 pattern2 pattern3]";
     }
 #ifdef HAVE_LIBUV
     if (!strcmp(command, "webdav"))
@@ -1599,11 +1719,14 @@ const char * getUsageStr(const char *command)
 #endif
     if (!strcmp(command, "export"))
     {
-#ifdef USE_PCRE
-        return "export [-d|-a [--password=PASSWORD] [--expire=TIMEDELAY] [-f]] [remotepath] [--use-pcre] [--time-format=FORMAT]";
-#else
-        return "export [-d|-a [--password=PASSWORD] [--expire=TIMEDELAY] [-f]] [remotepath] [--time-format=FORMAT]";
-#endif
+        return "export [-d|-a"
+               " [--writable]"
+               " [--mega-hosted]"
+               " [--password=PASSWORD] [--expire=TIMEDELAY] [-f]] [remotepath]"
+        #ifdef USE_PCRE
+               " [--use-pcre]"
+        #endif
+               " [--time-format=FORMAT]";
     }
     if (!strcmp(command, "share"))
     {
@@ -1631,7 +1754,7 @@ const char * getUsageStr(const char *command)
     }
     if (!strcmp(command, "users"))
     {
-        return "users [-s] [-h] [-n] [-d contact@email] [--time-format=FORMAT]";
+        return "users [-s] [-h] [-n] [-d contact@email] [--time-format=FORMAT] [--verify|--unverify contact@email.com] [--help-verify [contact@email.com]]";
     }
     if (!strcmp(command, "getua"))
     {
@@ -1758,11 +1881,11 @@ const char * getUsageStr(const char *command)
     }
     if (!strcmp(command, "find"))
     {
+        return "find [remotepath] [-l] [--pattern=PATTERN] [--type=d|f] [--mtime=TIMECONSTRAIN] [--size=SIZECONSTRAIN] "
 #ifdef USE_PCRE
-        return "find [remotepath] [-l] [--pattern=PATTERN] [--mtime=TIMECONSTRAIN] [--size=SIZECONSTRAIN] [--use-pcre] [--time-format=FORMAT] [--show-handles]";
-#else
-        return "find [remotepath] [-l] [--pattern=PATTERN] [--mtime=TIMECONSTRAIN] [--size=SIZECONSTRAIN] [--time-format=FORMAT] [--show-handles]";
+         "[--use-pcre] "
 #endif
+        "[--time-format=FORMAT] [--show-handles|--print-only-handles]";
     }
     if (!strcmp(command, "help"))
     {
@@ -1776,6 +1899,12 @@ const char * getUsageStr(const char *command)
     {
         return "transfers [-c TAG|-a] | [-r TAG|-a]  | [-p TAG|-a] [--only-downloads | --only-uploads] [SHOWOPTIONS]";
     }
+#ifdef HAVE_DOWNLOADS_COMMAND
+    if (!strcmp(command, "downloads"))
+    {
+        return "downloads [--purge|--enable-clean-slate|--disable-clean-slate|--enable-tracking|--disable-tracking|query-enabled|report-all| [id_1 id_2 ... id_n]]  [SHOWOPTIONS]";
+    }
+#endif
 #if defined(_WIN32) && defined(NO_READLINE)
     if (!strcmp(command, "autocomplete"))
     {
@@ -1823,6 +1952,14 @@ void printTimeFormatHelp(ostringstream &os)
     os << "                 You can use any strftime compliant format: http://www.cplusplus.com/reference/ctime/strftime/" << endl;
 }
 
+void printColumnDisplayerHelp(ostringstream &os)
+{
+    os << " --col-separator=X" << "\t" << "Tt will use X as column separator. Otherwise the output will use" << endl;
+    os << "                     " << "\t" << " spaces to tabulate in an easy to read output:" << endl;
+    os << " --output-cols=COLUMN_NAME_1,COLUMN_NAME2,..." << "\t" << "You can select which columns to show (and their order) with this option" << endl;
+}
+
+
 string getHelpStr(const char *command)
 {
     ostringstream os;
@@ -1833,12 +1970,16 @@ string getHelpStr(const char *command)
         os << "Logs into a MEGA account" << endl;
         os << " You can log in either with email and password, with session ID," << endl;
         os << " or into a folder (an exported/public folder)" << endl;
-        os << " If logging into a folder indicate url#key" << endl;
+        os << " If logging into a folder indicate url#key (or pasword protected link)" << endl;
+        os << "   Pass --auth-key=XXXX" << "\t" << "with the authentication key (last part of the Auth Token)" << endl;
+        os << "   to be able to write into the accessed folder" << endl;
         os << endl;
         os << " Please, avoid using passwords containing \" or '." << endl;
         os << endl;
         os << "Options:" << endl;
         os << " --auth-code=XXXX" << "\t" << "Two-factor Authentication code. More info: https://mega.nz/blog_48" << endl;
+        os << " --password=XXXX" << " \t" << "Password to decrypt password protected links (See \""
+                                             << commandPrefixBasedOnMode() << "export --help\")" << endl;
     }
     else if (!strcmp(command, "cancel"))
     {
@@ -1973,6 +2114,7 @@ string getHelpStr(const char *command)
         os << "   " << "\t" << " (public links, expiration dates, ...)" << endl;
         os << " --versions" << "\t" << "show historical versions" << endl;
         os << "   " << "\t" << "You can delete all versions of a file with \"deleteversions\"" << endl;
+        os << " --show-creation-time" << "\t" << "show creation time instead of modification time for files" << endl;
         printTimeFormatHelp(os);
 
 #ifdef USE_PCRE
@@ -2126,11 +2268,15 @@ string getHelpStr(const char *command)
     }
     if (!strcmp(command, "attr"))
     {
-        os << "Lists/updates node attributes" << endl;
+        os << "Lists/updates node attributes." << endl;
         os << endl;
         os << "Options:" << endl;
-        os << " -s" << "\tattribute value \t" << "sets an attribute to a value" << endl;
-        os << " -d" << "\tattribute       \t" << "removes the attribute" << endl;
+        os << " -s" << "\tattribute value \t" << "Sets an attribute to a value" << endl;
+        os << " -d" << "\tattribute       \t" << "Removes the attribute" << endl;
+        os << " --print-only-value  "<< "\t" << "When listing attributes, print only the values, not the attribute names." << endl;
+        os << " --force-non-official"<< "\t" << "Forces using the custom attribute version for officially recognized attributes." << endl;
+        os << "                     "<< "\t" << "Note that custom attributes are internally stored with a `_` prefix." << endl;
+        os << "                     "<< "\t" << "Use this option to show, modify or delete a custom attribute with the same name as one official." << endl;
     }
     if (!strcmp(command, "userattr"))
     {
@@ -2295,35 +2441,49 @@ string getHelpStr(const char *command)
         os << " -a pattern1 pattern2 ..." << "\t" << "adds pattern(s) to the exclusion list" << endl;
         os << "                         " << "\t" << "          (* and ? wildcards allowed)" << endl;
         os << " -d pattern1 pattern2 ..." << "\t" << "deletes pattern(s) from the exclusion list" << endl;
-        os << " --restart-syncs" << "\t" << "Try to restart synchronizations." << endl;
 
         os << endl;
-        os << "Changes will not be applied immediately to actions being performed in active syncs. " << endl;
-        os << "After adding/deleting patterns, you might want to: " << endl;
+        os << "Caveat: removal of patterns may not trigger sync transfers right away. " << endl;
+        os << "Consider: " << endl;
         os << " a) disable/reenable synchronizations manually" << endl;
         os << " b) restart MEGAcmd server" << endl;
-        os << " c) use --restart-syncs flag. Caveats:" << endl;
-        os << "  This will cause active transfers to be restarted" << endl;
-        os << "  In certain cases --restart-syncs might be unable to re-enable a synchronization. " << endl;
-        os << "  In such case, you will need to manually resume it or restart MEGAcmd server." << endl;
     }
     else if (!strcmp(command, "sync"))
     {
-        os << "Controls synchronizations" << endl;
+        os << "Controls synchronizations." << endl;
         os << endl;
-        os << "If no argument is provided, it lists current configured synchronizations" << endl;
+        os << "If no argument is provided, it lists current configured synchronizations." << endl;
         os << endl;
         os << "If provided local and remote paths, it will start synchronizing " << endl;
-        os << " a local folder into a remote folder" << endl;
+        os << " a local folder into a remote folder." << endl;
         os << endl;
         os << "If an ID/local path is provided, it will list such synchronization " << endl;
         os << " unless an option is specified." << endl;
         os << endl;
         os << "Options:" << endl;
-        os << "-d" << " " << "ID|localpath" << "\t" << "deletes a synchronization" << endl;
-        os << "-s" << " " << "ID|localpath" << "\t" << "stops(pauses) a synchronization" << endl;
-        os << "-r" << " " << "ID|localpath" << "\t" << "resumes a synchronization" << endl;
-        os << " --path-display-size=N" << "\t" << "Use at least N characters for displaying paths" << endl;
+        os << "-d | --remove" << " " << "ID|localpath" << "\t" << "deletes a synchronization." << endl;
+        os << "-s | --disable" << " " << "ID|localpath" << "\t" << "stops(pauses) a synchronization." << endl;
+        os << "-r | --enable" << " " << "ID|localpath" << "\t" << "resumes a synchronization." << endl;
+        os << " --path-display-size=N" << "\t" << "Use at least N characters for displaying paths." << endl;
+        os << " --show-handles" << "\t" << "Prints remote nodes handles (H:XXXXXXXX)." << endl;
+        printColumnDisplayerHelp(os);
+        os << endl;
+        os << "DISPLAYED columns:" << endl;
+        os << " " << "ID: an unique identifier of the sync." << endl;
+        os << " " << "LOCALPATH: local synced path." << endl;
+        os << " " << "REMOTEPATH: remote synced path (in MEGA)." << endl;
+        os << " " << "RUN_STATE: Indication of running state, possible values: " << endl;
+#define SOME_GENERATOR_MACRO(_, ShortName, Description) \
+    os << " " << "\t" << ShortName << ": " << Description << "." << endl;
+      GENERATE_FROM_SYNC_RUN_STATE(SOME_GENERATOR_MACRO)
+#undef SOME_GENERATOR_MACRO
+        os << " " << "STATUS: State of the sync, possible values: " << endl;
+#define SOME_GENERATOR_MACRO(_, ShortName, Description) \
+    os << " " << "\t" << ShortName << ": " << Description << "." << endl;
+      GENERATE_FROM_SYNC_PATH_STATE(SOME_GENERATOR_MACRO)
+#undef SOME_GENERATOR_MACRO
+        os << " " << "ERROR: Error, if any." << endl;
+        os << " " << "SIZE, FILE & DIRS: size, number of files and number of dirs in the remote folder." << endl;
     }
     else if (!strcmp(command, "backup"))
     {
@@ -2408,7 +2568,13 @@ string getHelpStr(const char *command)
         os << " --use-pcre" << "\t" << "use PCRE expressions" << endl;
 #endif
         os << " -a" << "\t" << "Adds an export (or modifies it if existing)" << endl;
+        os << " --writable" << "\t" << "Makes the exported folder writable" << endl;
+        os << " --mega-hosted" << "\t" << "The share key of this specific folder will be shared with MEGA." << endl;
+        os << "              " << "\t" << "This is intended to be used for folders accessible though MEGA's S4 service." << endl;
+        os << "              " << "\t" << "Encryption will occur nonetheless within MEGA's S4 service." << endl;
         os << " --password=PASSWORD" << "\t" << "Protects link with password. Please, avoid using passwords containing \" or '" << endl;
+        os << "                    " << "\t" << "  Caveat: a password protected link will be printed only after exporting it." << endl;
+        os << "                    " << "\t" << "  If you use \"" << commandPrefixBasedOnMode() << "export\" to print it again, it will be shown unenctypted." << endl;
         os << " --expire=TIMEDELAY" << "\t" << "Determines the expiration time of a node." << endl;
         os << "                   " << "\t" << "   It indicates the delay in hours(h), days(d), " << endl;
         os << "                   " << "\t"  << "   minutes(M), seconds(s), months(m) or years(y)" << endl;
@@ -2435,7 +2601,7 @@ string getHelpStr(const char *command)
 #ifdef USE_PCRE
         os << " --use-pcre" << "\t" << "use PCRE expressions" << endl;
 #endif
-        os << " -p" << "\t" << "Show pending shares" << endl;
+        os << " -p" << "\t" << "Show pending shares too" << endl;
         os << " --with=email" << "\t" << "Determines the email of the user to [no longer] share with" << endl;
         os << " -d" << "\t" << "Stop sharing with the selected user" << endl;
         os << " -a" << "\t" << "Adds a share (or modifies it if existing)" << endl;
@@ -2449,12 +2615,14 @@ string getHelpStr(const char *command)
         os << " of no option selected, it will display all the shares existing " << endl;
         os << " in the tree of that path" << endl;
         os << endl;
-        os << "When sharing a folder with a user that is not a contact (see \"users --help\")" << endl;
+        os << "When sharing a folder with a user that is not a contact (see \"" << commandPrefixBasedOnMode() << "users --help\")" << endl;
         os << "  the share will be in a pending state. You can list pending shares with" << endl;
-        os << " \"share -p\". He would need to accept your invitation (see \"ipc\")" << endl;
+        os << " \"share -p\". He would need to accept your invitation (see \"" << commandPrefixBasedOnMode() << "ipc\")" << endl;
+        os << endl;
+        os << "Sharing folders will require contact verification (see \"" << commandPrefixBasedOnMode() << "users --help-verify\")" << endl;
         os << endl;
         os << "If someone has shared something with you, it will be listed as a root folder" << endl;
-        os << " Use \"mount\" to list folders shared with you" << endl;
+        os << " Use \"" << commandPrefixBasedOnMode() << "mount\" to list folders shared with you" << endl;
     }
     else if (!strcmp(command, "invite"))
     {
@@ -2478,9 +2646,9 @@ string getHelpStr(const char *command)
         os << " -d" << "\t" << "Rejects invitation" << endl;
         os << " -i" << "\t" << "Ignores invitation [WARNING: do not use unless you know what you are doing]" << endl;
         os << endl;
-        os << "Use \"invite\" to send/remove invitations to other users" << endl;
-        os << "Use \"showpcr\" to browse incoming/outgoing invitations" << endl;
-        os << "Use \"users\" to see contacts" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "invite\" to send/remove invitations to other users" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "showpcr\" to browse incoming/outgoing invitations" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "users\" to see contacts" << endl;
     }
     if (!strcmp(command, "masterkey"))
     {
@@ -2503,24 +2671,33 @@ string getHelpStr(const char *command)
         os << " --out" << "\t" << "Shows outgoing invitations" << endl;
         printTimeFormatHelp(os);
         os << endl;
-        os << "Use \"ipc\" to manage invitations received" << endl;
-        os << "Use \"users\" to see contacts" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "ipc\" to manage invitations received" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "users\" to see contacts" << endl;
     }
     else if (!strcmp(command, "users"))
     {
         os << "List contacts" << endl;
         os << endl;
         os << "Options:" << endl;
+        os << " -d" << "\tcontact@email   " << "\t" << "Deletes the specified contact." << endl;
+        os << "--help-verify              " << "\t" << "Prints general information regarding contact verification." << endl
+           << "--help-verify contact@email" << "\t" << "This will show credentials of both own user and contact" << endl
+           << "                           " << "\t" << " and instructions in order to proceed with the verifcation." << endl;
+        os << "--verify contact@email     " << "\t" << "Verifies contact@email."  << endl
+           << "                           " << "\t" << " CAVEAT: First you would need to manually ensure credentials match!" << endl;
+        os << "--unverify contact@email   " << "\t" << "Sets contact@email as no longer verified. New shares with that user " << endl
+           << "                           " << "\t" << " will require verification." << endl;
+        os << "Listing Options:" << endl;
         os << " -s" << "\t" << "Show shared folders with listed contacts" << endl;
         os << " -h" << "\t" << "Show all contacts (hidden, blocked, ...)" << endl;
         os << " -n" << "\t" << "Show users names" << endl;
-        os << " -d" << "\tcontact@email " << "Deletes the specified contact" << endl;
+
         printTimeFormatHelp(os);
         os << endl;
-        os << "Use \"invite\" to send/remove invitations to other users" << endl;
-        os << "Use \"showpcr\" to browse incoming/outgoing invitations" << endl;
-        os << "Use \"ipc\" to manage invitations received" << endl;
-        os << "Use \"users\" to see contacts" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "invite\" to send/remove invitations to other users" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "showpcr\" to browse incoming/outgoing invitations" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "ipc\" to manage invitations received" << endl;
+        os << "Use \"" << commandPrefixBasedOnMode() << "users\" to see contacts" << endl;
     }
     else if (!strcmp(command, "speedlimit"))
     {
@@ -2642,6 +2819,7 @@ string getHelpStr(const char *command)
         os << "Options:" << endl;
         os << " --pattern=PATTERN" << "\t" << "Pattern to match";
         os << " (" << getsupportedregexps() << ") " << endl;
+        os << " --type=d|f           " << "\t" << "Determines type. (d) for folder, f for files" << endl;
         os << " --mtime=TIMECONSTRAIN" << "\t" << "Determines time constrains, in the form: [+-]TIMEVALUE" << endl;
         os << "                      " << "\t" << "  TIMEVALUE may include hours(h), days(d), minutes(M)," << endl;
         os << "                      " << "\t" << "   seconds(s), months(m) or years(y)" << endl;
@@ -2657,6 +2835,7 @@ string getHelpStr(const char *command)
         os << "                      " << "\t" << "   \"-3M\" shows files smaller than 3 Megabytes" << endl;
         os << "                      " << "\t" << "   \"-4M+100K\" shows files smaller than 4 Mbytes and bigger than 100 Kbytes" << endl;
         os << " --show-handles" << "\t" << "Prints files/folders handles (H:XXXXXXXX). You can address a file/folder by its handle" << endl;
+        os << " --print-only-handles" << "\t" << "Prints only files/folders handles (H:XXXXXXXX). You can address a file/folder by its handle" << endl;
 #ifdef USE_PCRE
         os << " --use-pcre" << "\t" << "use PCRE expressions" << endl;
 #endif
@@ -2682,6 +2861,90 @@ string getHelpStr(const char *command)
             os << "To only exit current shell and keep server running, use \"exit --only-shell\"" << endl;
         }
     }
+#ifdef HAVE_DOWNLOADS_COMMAND
+    else if (!strcmp(command, "downloads"))
+    {
+        os << "Lists or configure downloads tracking and reporting." << endl;
+        os << endl;
+        os << "It will print the information regarding one or more downloads give their tags or object ids"<< endl;
+        os << "      (both will be reported when using \"get\" with -q)." << endl;
+        os << "IMPORTANT: it is disabled by default, you need to enable it with \"downloads --enable-tracking\"." << endl;
+        os << endl;
+        os << "Options:" << endl;
+        os << " --query-enabled"  << "\t" << "Indicates if download tracking is enabled" << endl;
+        os << " --enable-tracking"  << "\t" << "Starts tracking downloads. It will store the information in a sqlite3 db" << endl;
+        os << " --disable-tracking"  << "\t" << "Stops tracking downloads. Notice, it will remove the associated database" << endl;
+        os << " --enable-clean-slate"  << "\t" << "Transfers from previous executions will be discarded upon restart" << endl;
+        os << " --disable-clean-slate"  << "\t" << "Transfers from previous executions will not be discarded upon restart" << endl;
+        os << " --purge"  << "\t" << "Cancells all onging transfers, and cleans all tracking (included persisted data)" << endl;
+
+        os << endl;
+        os << "Show options:" << endl;
+        os << " --report-all" << "\t" << "Prints a report of all active and finished downloads kept in memory" << endl;
+        os << " --show-subtransfers" << "\t" << "Show information regarding transfers" << endl;
+        os << " --path-display-size=N" << "\t" << "Use at least N characters for displaying paths" << endl;
+        printColumnDisplayerHelp(os);
+        os << endl;
+        os << "Displaying cols:" << endl;
+        os << " OBJECT_ID"  << "\t" << "Id of the object (it will always be the same for the same download)" << endl;
+        os << " SUB_STARTED"  << "\t" << "Number of subtransfers started" << endl;
+        os << " SUB_OK"  << "\t" << "Number of subtransfers that completed ok" << endl;
+        os << " SUB_FAIL"  << "\t" << "Number of subtransfers that completed with some error" << endl;
+        os << " SUBTRANSFER"  << "\t" << "Tag of the subtransfers (only when using --show-subtransfers)" << endl;
+        os << " ERROR_CODE"  << "\t" << "Error of the transfer (if any)" << endl;
+        os << " TYPE"  << "\t" << "Type of transfer (see below)" << endl;
+        os << " TAG"  << "\t" << "A tag that uniquely identifies a tranfer in current execution of MEGAcmd" << endl;
+        os << " SOURCEPATH"  << "\t" << "Path of the folder/file downloaded" << endl;
+        os << " DESTINYPATH"  << "\t" << "Local path for the downloaded file/folder" << endl;
+        os << " PROGRESS"  << "\t" << "Human readable progress of the download" << endl;
+        os << " STATE"  << "\t" << "State of the transfer. " << endl;
+        os << "      "  << "\t" << " Values:" << endl;
+        os << "      "  << "\t" << "  QUEUED:" << "\t" << "queued in the system, waiting for an slot to be assigned" << endl;
+        os << "      "  << "\t" << "  ACTIVE:" << "\t" << "doing I/O" << endl;
+        os << "      "  << "\t" << "  PAUSED:" << "\t" << "paused" << endl;
+        os << "      "  << "\t" << "  RETRYING:" << "\t" << "retrying after some potentially recoverable error" << endl;
+        os << "      "  << "\t" << "  COMPLETING:" << "\t" << "final stages (e.g: moving temporal transfer file to its final destination)" << endl;
+        os << "      "  << "\t" << "  COMPLETED:" << "\t" << "finished ok" << endl;
+        os << "      "  << "\t" << "  CANCELLED:" << "\t" << "cancelled" << endl;
+        os << "      "  << "\t" << "  FAILED:" << "\t" << "Failed (or subtransfers failed)" << endl;
+
+        os << " TRANSFERRED"  << "\t" << "Number of bytes transferred" << endl;
+        os << " TOTAL"  << "\t" << "Number of total bytes to be transferred" << endl;
+        os << endl;
+        os << "TYPE legend correspondence:" << endl;
+#ifdef _WIN32
+
+        const string cD = getutf8fromUtf16(L"\u25bc");
+        const string cU = getutf8fromUtf16(L"\u25b2");
+        const string cS = getutf8fromUtf16(L"\u21a8");
+        const string cB = getutf8fromUtf16(L"\u2191");
+#else
+        const string cD = "\u21d3";
+        const string cU = "\u21d1";
+        const string cS = "\u21f5";
+        const string cB = "\u23eb";
+#endif
+        os << "  " << cD <<" = \t" << "Download transfer" << endl;
+        os << "  " << cU <<" = \t" << "Upload transfer" << endl;
+        os << "  " << cS <<" = \t" << "Sync transfer. The transfer is done in the context of a synchronization" << endl;
+        os << "  " << cB <<" = \t" << "Backup transfer. The transfer is done in the context of a backup" << endl;
+
+        os << endl;
+        os << "Configuration values" << endl;
+        os << "In your configuration folder (HOME/Appdata) there is megacmd.cfg configuration file." << endl;
+        os << "This are the properties used in the downloads tracking & report mechanism:" << endl;
+        os << " downloads_tracking_enabled"  << "\t" << "If downloads tracking is enabled. Default=0 (false)!" << endl;
+        os << " downloads_tracking_max_finished_in_memory_high_threshold"  << "\t" << "Max number of downloads to keep in memory. It this is surpassed, " << endl;
+        os << "                                                         "  << "\t" << "finished transfers will start to be deleted (first the least recently updated)." << endl;
+        os << "                                                         "  << "\t" << "Note: you can still get the information from the db using OJBECT_ID." << endl;
+        os << "                                                         "  << "\t" << "Default=40000" << endl;
+        os << " downloads_tracking_max_finished_in_memory_low_threshold"  << "\t" << "When pruning is executed it will clean until this threshold. Default=20000" << endl;
+        os << " downloads_db_path"  << "\t" << "Path to store tracking information of downloads. Default: ~/.megaCmd/downloads.db" << endl;
+        os << " downloads_db_io_frequency_ms"  << "\t" << "Frequency in milliseconds to commit pending changes in the database. Default=10000" << endl;
+        os << " downloads_db_max_queued_changes"  << "\t" << "Max allowed number of changes to be queued before writting. Default=1000" << endl;
+        os << " downloads_cleanslate_enabled"  << "\t" << "If transfers from previous executions will be discarded upon restart. Default=0 (false)" << endl;
+    }
+#endif
     else if (!strcmp(command, "transfers"))
     {
         os << "List or operate with transfers" << endl;
@@ -2701,6 +2964,7 @@ string getHelpStr(const char *command)
         os << " --only-completed" << "\t" << "Show only completed download" << endl;
         os << " --limit=N" << "\t" << "Show only first N transfers" << endl;
         os << " --path-display-size=N" << "\t" << "Use at least N characters for displaying paths" << endl;
+        printColumnDisplayerHelp(os);
         os << endl;
         os << "TYPE legend correspondence:" << endl;
 #ifdef _WIN32
@@ -2721,6 +2985,7 @@ string getHelpStr(const char *command)
         os << "  " << cB <<" = \t" << "Backup transfer. The transfer is done in the context of a backup" << endl;
 
     }
+
 #if defined(_WIN32) && defined(NO_READLINE)
     else if (!strcmp(command, "autocomplete"))
     {
@@ -3686,13 +3951,20 @@ void LinuxSignalHandler(int signum)
 }
 #endif
 
-void finalize(bool waitForRestartSignal)
+void finalize(bool waitForRestartSignal_param)
 {
     static bool alreadyfinalized = false;
     if (alreadyfinalized)
         return;
     alreadyfinalized = true;
     LOG_info << "closing application ...";
+
+#ifdef HAVE_DOWNLOADS_COMMAND
+    LOG_debug << "Shuting down downloads manager";
+    DownloadsManager::Instance().shutdown(false);
+    LOG_debug << "Downloads manager shut down";
+#endif
+
     delete_finished_threads();
     if (!consoleFailed)
     {
@@ -3724,7 +3996,7 @@ void finalize(bool waitForRestartSignal)
     delete cmdexecuter;
 
 #ifdef __linux__
-    if (waitForRestartSignal)
+    if (waitForRestartSignal_param)
     {
         LOG_debug << "Waiting for signal to restart MEGAcmd ... ";
         std::unique_lock<std::mutex> lock(mtxcondvar);
@@ -4027,6 +4299,7 @@ void megacmd()
                 OSVERSIONINFOEX osvi;
                 ZeroMemory(&osvi, sizeof(OSVERSIONINFOEX));
                 osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
+#pragma warning(disable: 4996) //  warning C4996: 'GetVersionExW': was declared deprecated
                 if (GetVersionEx((OSVERSIONINFO*)&osvi) && osvi.dwMajorVersion < 6)
                 {
                     isOSdeprecated = true;
@@ -4206,57 +4479,6 @@ void printWelcomeMsg()
     COUT << endl;
 
 }
-
-#ifdef __MACH__
-
-
-bool enableSetuidBit()
-{
-    char *response = runWithRootPrivileges("do shell script \"chown root /Applications/MEGAcmd.app/Contents/MacOS/MEGAcmdLoader && chmod 4755 /Applications/MEGAcmd.app/Contents/MacOS/MEGAcmdLoader && echo true\"");
-    if (!response)
-    {
-        return NULL;
-    }
-    bool result = strlen(response) >= 4 && !strncmp(response, "true", 4);
-    delete response;
-    return result;
-}
-
-
-void initializeMacOSStuff(int argc, char* argv[])
-{
-#ifndef NDEBUG
-        return;
-#endif
-
-    int fd = -1;
-    if (argc)
-    {
-        long int value = strtol(argv[argc-1], NULL, 10);
-        if (value > 0 && value < INT_MAX)
-        {
-            fd = value;
-        }
-    }
-
-    if (fd < 0)
-    {
-        if (!enableSetuidBit())
-        {
-            ::exit(0);
-        }
-
-        //Reboot
-        if (fork() )
-        {
-            execv("/Applications/MEGAcmd.app/Contents/MacOS/MEGAcmdLoader",argv);
-        }
-        sleep(10);
-        ::exit(0);
-    }
-}
-
-#endif
 
 string getLocaleCode()
 {
@@ -4678,6 +4900,7 @@ void reset()
 {
     setBlocked(false);
 }
+
 #ifdef _WIN32
 void uninstall()
 {
@@ -4754,22 +4977,13 @@ int main(int argc, char* argv[])
     mcmdMainArgv = argv;
     mcmdMainArgc = argc;
 
-#ifdef __MACH__
-    initializeMacOSStuff(argc,argv);
-#endif
-
-    NullBuffer null_buffer;
-    std::ostream null_stream(&null_buffer);
-#ifndef ENABLE_LOG_PERFORMANCE
-    SimpleLogger::setAllOutputs(&null_stream);
-#endif
     SimpleLogger::setLogLevel(logMax); // do not filter anything here, log level checking is done by loggerCMD
 
     loggerCMD = new MegaCMDLogger();
 
     loggerCMD->setApiLoggerLevel(MegaApi::LOG_LEVEL_ERROR);
     loggerCMD->setCmdLoggerLevel(MegaApi::LOG_LEVEL_INFO);
-#if DEBUG and !defined(_WIN32)
+#if defined(DEBUG) && !defined(_WIN32)
     loggerCMD->setApiLoggerLevel(MegaApi::LOG_LEVEL_DEBUG);
     loggerCMD->setCmdLoggerLevel(MegaApi::LOG_LEVEL_DEBUG);
 #endif
@@ -4822,7 +5036,7 @@ int main(int argc, char* argv[])
 
         while (is_pid_running(processId))
         {
-            cerr << "Waiting for former server to end:  " << processId << endl;
+            cerr << "Waiting for former MEGAcmd server to end:  " << processId << endl;
             sleep(1);
         }
 #endif
@@ -4863,28 +5077,7 @@ int main(int argc, char* argv[])
 
     LOG_debug << "MEGAcmd version: " << MEGACMD_MAJOR_VERSION << "." << MEGACMD_MINOR_VERSION << "." << MEGACMD_MICRO_VERSION << "." << MEGACMD_BUILD_ID << ": code " << MEGACMD_CODE_VERSION;
 
-#if defined(__MACH__) && defined(ENABLE_SYNC)
-    int fd = -1;
-    if (argc)
-    {
-        long int value = strtol(argv[argc-1], NULL, 10);
-        if (value > 0 && value < INT_MAX)
-        {
-            fd = value;
-        }
-    }
-
-    if (fd >= 0)
-    {
-        api = new MegaApi("BdARkQSQ", ConfigurationManager::getConfigFolder().c_str(), userAgent, fd);
-    }
-    else
-    {
-        api = new MegaApi("BdARkQSQ", (MegaGfxProcessor*)NULL, ConfigurationManager::getConfigFolder().c_str(), userAgent);
-    }
-#else
     api = new MegaApi("BdARkQSQ", (MegaGfxProcessor*)NULL, ConfigurationManager::getConfigFolder().c_str(), userAgent);
-#endif
 
     if (setapiurl)
     {
@@ -4896,7 +5089,9 @@ int main(int argc, char* argv[])
 
     for (int i = 0; i < 5; i++)
     {
-        MegaApi *apiFolder = new MegaApi("BdARkQSQ", (MegaGfxProcessor*)NULL, (const char*)NULL, userAgent);
+        MegaApi *apiFolder = new MegaApi("BdARkQSQ", (MegaGfxProcessor*)NULL,
+                                         ConfigurationManager::getConfFolderSubdir(std::string("apiFolder_").append(std::to_string(i))).c_str()
+                                         , userAgent);
         apiFolder->setLanguage(localecode.c_str());
         apiFolders.push(apiFolder);
         apiFolder->setLogLevel(MegaApi::LOG_LEVEL_MAX);
@@ -4999,7 +5194,7 @@ int main(int argc, char* argv[])
         api->sendEvent(MCMD_EVENT_UPDATE_ID,MCMD_EVENT_UPDATE_MESSAGE);
         stringstream ss;
         ss << "MEGAcmd has been updated to version " << MEGACMD_MAJOR_VERSION << "." << MEGACMD_MINOR_VERSION << "." << MEGACMD_MICRO_VERSION << "." << MEGACMD_BUILD_ID << " - code " << MEGACMD_CODE_VERSION << endl;
-        broadcastMessage(ss.str() ,true);
+        broadcastMessage(ss.str(), true);
     }
 
     if (!ConfigurationManager::session.empty())

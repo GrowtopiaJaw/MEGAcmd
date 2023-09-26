@@ -41,8 +41,9 @@ private:
     static void loadConfigDir();
 
 
+    static void removeSyncConfig(sync_struct *syncToRemove);
 public:
-    static std::map<std::string, sync_struct *> configuredSyncs;
+    static std::map<std::string, sync_struct *> oldConfiguredSyncs; //This will refer to old syncs from now on
     static std::map<std::string, backup_struct *> configuredBackups;
 
     static std::recursive_mutex settingsMutex;
@@ -237,10 +238,14 @@ public:
 
     static std::string getConfigFolder();
 
+    // creates a subfolder within config dir and returns it (utf8)
+    static std::string getConfFolderSubdir(const std::string &utf8Name);
+
     static bool getHasBeenUpdated();
 
     static void unloadConfiguration();
 
+    static void migrateSyncConfig(mega::MegaApi *api);
 };
 
 }//end namespace

@@ -19,6 +19,9 @@
 #include "listeners.h"
 #include "configurationmanager.h"
 #include "megacmdutils.h"
+#include "megacmdtransfermanager.h"
+
+#include <utility>
 
 using namespace mega;
 
@@ -31,35 +34,35 @@ void MegaCmdGlobalListener::onChatsUpdate(MegaApi*, MegaTextChatList*)
 }
 #endif
 
-void MegaCmdGlobalListener::onUsersUpdate(MegaApi *api, MegaUserList *users)
+void MegaCmdGlobalListener::onUsersUpdate(MegaApi *api, MegaUserList *users1)
 {
-    if (users)
+    if (users1)
     {
-        if (users->size() == 1)
+        if (users1->size() == 1)
         {
             LOG_debug << " 1 user received or updated";
         }
         else
         {
-            LOG_debug << users->size() << " users received or updated";
+            LOG_debug << users1->size() << " users received or updated";
         }
     }
     else //initial update or too many changes
     {
-        MegaUserList *users = api->getContacts();
+        MegaUserList *users2 = api->getContacts();
 
-        if (users && users->size())
+        if (users2 && users2->size())
         {
-            if (users->size() == 1)
+            if (users2->size() == 1)
             {
                 LOG_debug << " 1 user received or updated";
             }
             else
             {
-                LOG_debug << users->size() << " users received or updated";
+                LOG_debug << users2->size() << " users received or updated";
             }
 
-            delete users;
+            delete users2;
         }
     }
 }
@@ -172,7 +175,7 @@ void MegaCmdGlobalListener::onEvent(MegaApi *api, MegaEvent *event)
             LOG_debug << " receivied EVENT_ACCOUNT_BLOCKED: number = " << event->getNumber();
             return;
         }
-        setBlocked(event->getNumber()); //this should be true always
+        setBlocked(int(event->getNumber())); //this should be true always
 
         switch (event->getNumber())
         {
@@ -228,7 +231,7 @@ void MegaCmdGlobalListener::onEvent(MegaApi *api, MegaEvent *event)
         else
         {
             int previousStatus = sandboxCMD->storageStatus;
-            sandboxCMD->storageStatus = event->getNumber();
+            sandboxCMD->storageStatus = int(event->getNumber());
             if (sandboxCMD->storageStatus == MegaApi::STORAGE_STATE_PAYWALL || sandboxCMD->storageStatus == MegaApi::STORAGE_STATE_RED || sandboxCMD->storageStatus == MegaApi::STORAGE_STATE_ORANGE)
             {
                 ConfigurationManager::savePropertyValue("ask4storage",true);
@@ -302,6 +305,34 @@ void MegaCmdGlobalListener::onEvent(MegaApi *api, MegaEvent *event)
     else if (event->getType() == MegaEvent::EVENT_STORAGE_SUM_CHANGED)
     {
         sandboxCMD->receivedStorageSum = event->getNumber();
+    }
+    else if (event->getType() == MegaEvent::EVENT_SYNCS_DISABLED)
+    {
+        removeDelayedBroadcastMatching("Your sync has been disabled");
+        broadcastMessage(std::string("Your syncs have been disabled. Reason: ")
+                         .append(MegaSync::getMegaSyncErrorCode(int(event->getNumber()))), true);
+    }
+    else if (event->getType() == MegaEvent::EVENT_UPGRADE_SECURITY)
+    {
+        std::stringstream ss;
+        ss << ""
+              "Your account's security needs upgrading.\n"
+              "Please execute: \"confirm --security\".\n"
+              "This only needs to be done once. If you have seen this message for\n"
+              "this account before, please exit MEGAcmd.";
+
+        auto msg = ss.str();
+        appendGreetingStatusAllListener(std::string("message:") + msg);
+        broadcastMessage(std::move(msg)); // broadcast the message, so that it reaches currently open shell too!
+    }
+    else if (event->getType() == MegaEvent::EVENT_NODES_CURRENT)
+    {
+        sandboxCMD->mNodesCurrentPromise.fulfil();
+#ifdef HAVE_DOWNLOADS_COMMAND
+        // we need to cancel transfers here, because, even if fetchnodes finished, the actual transfer resumption
+        // won't happen until all action packets are received. And cancellation of transfers need them to be loaded already
+        std::thread([this](){sandboxCMD->cmdexecuter->cleanSlateTranfers();}).detach();
+#endif
     }
 }
 
@@ -383,17 +414,17 @@ void MegaCmdMegaListener::onChatsUpdate(MegaApi *api, MegaTextChatList *chats)
 
 #ifdef ENABLE_BACKUPS
 //backup callbacks:
-void MegaCmdMegaListener::onBackupStateChanged(MegaApi *api,  MegaBackup *backup)
+void MegaCmdMegaListener::onBackupStateChanged(MegaApi *api,  MegaScheduledCopy *backup)
 {
     LOG_verbose << " At onBackupStateChanged: " << backupSatetStr(backup->getState());
 }
 
-void MegaCmdMegaListener::onBackupStart(MegaApi *api, MegaBackup *backup)
+void MegaCmdMegaListener::onBackupStart(MegaApi *api, MegaScheduledCopy *backup)
 {
     LOG_verbose << " At onBackupStart";
 }
 
-void MegaCmdMegaListener::onBackupFinish(MegaApi* api, MegaBackup *backup, MegaError* error)
+void MegaCmdMegaListener::onBackupFinish(MegaApi* api, MegaScheduledCopy *backup, MegaError* error)
 {
     LOG_verbose << " At onBackupFinish";
     if (error->getErrorCode() == MegaError::API_EEXPIRED)
@@ -406,12 +437,12 @@ void MegaCmdMegaListener::onBackupFinish(MegaApi* api, MegaBackup *backup, MegaE
     }
 }
 
-void MegaCmdMegaListener::onBackupUpdate(MegaApi *api, MegaBackup *backup)
+void MegaCmdMegaListener::onBackupUpdate(MegaApi *api, MegaScheduledCopy *backup)
 {
     LOG_verbose << " At onBackupUpdate";
 }
 
-void MegaCmdMegaListener::onBackupTemporaryError(MegaApi *api, MegaBackup *backup, MegaError* error)
+void MegaCmdMegaListener::onBackupTemporaryError(MegaApi *api, MegaScheduledCopy *backup, MegaError* error)
 {
     LOG_verbose << " At onBackupTemporaryError";
     if (error->getErrorCode() != MegaError::API_OK)
@@ -419,6 +450,42 @@ void MegaCmdMegaListener::onBackupTemporaryError(MegaApi *api, MegaBackup *backu
         LOG_err << "Backup temporary error: " << error->getErrorString();
     }
 }
+
+void MegaCmdMegaListener::onSyncAdded(MegaApi *api, MegaSync *sync)
+{
+    LOG_verbose << "Sync added: " << sync->getLocalFolder() << " to " << sync->getLastKnownMegaFolder();
+
+    if (!ConfigurationManager::getConfigurationValue("firstSyncConfigured", false))
+    {
+        api->sendEvent(MCMD_EVENT_FIRST_CONFIGURED_SYNC_ID,
+                   MCMD_EVENT_FIRST_CONFIGURED_SYNC_MESSAGE);
+        ConfigurationManager::savePropertyValue("firstSyncConfigured", true);
+    }
+}
+
+void MegaCmdMegaListener::onSyncStateChanged(MegaApi *api, MegaSync *sync)
+{
+    std::stringstream ss;
+    ss << "Your sync " << sync->getLocalFolder() << " to: " << sync->getLastKnownMegaFolder()
+    << " has transitioned to state " << syncRunStateStr(sync->getRunState());
+    if (sync->getError())
+    {
+        ss << ". ErrorCode: " << sync->getMegaSyncErrorCode();
+    }
+    auto msg = ss.str();
+
+    if (sync->getError() || sync->getRunState() >= MegaSync::RUNSTATE_PAUSED)
+    {
+        broadcastDelayedMessage(msg, true);
+    }
+    LOG_debug << msg;
+}
+
+void MegaCmdMegaListener::onSyncDeleted(MegaApi *api, MegaSync *sync)
+{
+    LOG_verbose << "Sync deleted: " << sync->getLocalFolder() << " to " << sync->getLastKnownMegaFolder();
+}
+
 #endif
 ////////////////////////////////////////
 ///      MegaCmdListener methods     ///
@@ -449,44 +516,6 @@ void MegaCmdListener::doOnRequestFinish(MegaApi* api, MegaRequest *request, Mega
     {
         case MegaRequest::TYPE_FETCH_NODES:
         {
-            map<string, sync_struct *>::iterator itr;
-            int i = 0;
-#ifdef ENABLE_SYNC
-
-            std::shared_ptr<std::lock_guard<std::recursive_mutex>> g = std::make_shared<std::lock_guard<std::recursive_mutex>>(ConfigurationManager::settingsMutex);
-            // shared pointed lock_guard. will be freed when all resuming are complete
-
-            for (itr = ConfigurationManager::configuredSyncs.begin(); itr != ConfigurationManager::configuredSyncs.end(); ++itr, i++)
-            {
-                sync_struct *oldsync = ((sync_struct*)( *itr ).second );
-
-                MegaNode * node = api->getNodeByHandle(oldsync->handle);
-                api->resumeSync(oldsync->localpath.c_str(), node, oldsync->fingerprint, new MegaCmdListenerFuncExecuter([g, oldsync, node](mega::MegaApi* api, mega::MegaRequest *request, mega::MegaError *e)
-                {
-                    std::unique_ptr<char []>nodepath (api->getNodePath(node));
-
-                    if ( e->getErrorCode() == MegaError::API_OK )
-                    {
-                        if (request->getNumber())
-                        {
-                            oldsync->fingerprint = request->getNumber();
-                        }
-                        oldsync->active = true;
-                        oldsync->loadedok = true;
-
-                        LOG_info << "Loaded sync: " << oldsync->localpath << " to " << nodepath.get();
-                    }
-                    else
-                    {
-                        oldsync->loadedok = false;
-                        oldsync->active = false;
-
-                        LOG_err << "Failed to resume sync: " << oldsync->localpath << " to " << nodepath.get();
-                    }
-                    delete node;
-                }, true));
-            }
-#endif
             informProgressUpdate(PROGRESS_COMPLETE, request->getTotalBytes(), this->clientID, "Fetching nodes");
             break;
         }
@@ -851,10 +880,18 @@ void MegaCmdMultiTransferListener::doOnTransferFinish(MegaApi* api, MegaTransfer
 
 void MegaCmdMultiTransferListener::waitMultiEnd()
 {
-    for (int i=0; i < started; i++)
+    for (unsigned i = 0; i < created; i++)
     {
         wait();
     }
+}
+
+void MegaCmdMultiTransferListener::waitMultiStart()
+{
+    std::unique_lock<std::mutex> lock(mStartedTransfersMutex);
+    mStartedConditionVariable.wait(lock, [this]() {
+            return (mStartedTransfersCount >= created);
+    });
 }
 
 
@@ -985,6 +1022,13 @@ long long MegaCmdMultiTransferListener::getOngoingTotalBytes()
     return total;
 }
 
+#ifdef HAVE_DOWNLOADS_COMMAND
+std::vector<DownloadId> MegaCmdMultiTransferListener::getStartedTransfers() const
+{
+    return mStartedTransfers;
+}
+#endif
+
 bool MegaCmdMultiTransferListener::getProgressinformed() const
 {
     return progressinformed;
@@ -999,7 +1043,7 @@ MegaCmdMultiTransferListener::MegaCmdMultiTransferListener(MegaApi *megaApi, Meg
     alreadyFinished = false;
     this->clientID = clientID;
 
-    started = 0;
+    created = 0;
     finished = 0;
     totalbytes = 0;
     transferredbytes = 0;
@@ -1010,6 +1054,7 @@ MegaCmdMultiTransferListener::MegaCmdMultiTransferListener(MegaApi *megaApi, Meg
 
 }
 
+
 bool MegaCmdMultiTransferListener::onTransferData(MegaApi *api, MegaTransfer *transfer, char *buffer, size_t size)
 {
     return true;
@@ -1017,7 +1062,20 @@ bool MegaCmdMultiTransferListener::onTransferData(MegaApi *api, MegaTransfer *tr
 
 void MegaCmdMultiTransferListener::onNewTransfer()
 {
-    started ++;
+    std::lock_guard<std::mutex> g(mStartedTransfersMutex);
+    created ++;
+}
+
+void MegaCmdMultiTransferListener::onTransferStarted(const std::string &path, int tag)
+{
+    {
+        std::lock_guard<std::mutex> g(mStartedTransfersMutex);
+        mStartedTransfersCount++;
+#ifdef HAVE_DOWNLOADS_COMMAND
+        mStartedTransfers.emplace_back(DownloadId(tag,path));
+#endif
+        mStartedConditionVariable.notify_one();
+    }
 }
 
 ////////////////////////////////////////
@@ -1030,10 +1088,17 @@ MegaCmdGlobalTransferListener::MegaCmdGlobalTransferListener(MegaApi *megaApi, M
     this->megaApi = megaApi;
     this->sandboxCMD = sandboxCMD;
     this->listener = parent;
-};
+}
 
 void MegaCmdGlobalTransferListener::onTransferFinish(MegaApi* api, MegaTransfer *transfer, MegaError* error)
 {
+#ifdef HAVE_DOWNLOADS_COMMAND
+    if (transfer->getType() == transfer->TYPE_DOWNLOAD && ConfigurationManager::getConfigurationValue("downloads_tracking_enabled", false))
+    {
+        DownloadsManager::Instance().onTransferFinish(api, transfer, error);
+    }
+#endif
+
     completedTransfersMutex.lock();
     completedTransfers.push_front(transfer->copy());
 
@@ -1057,8 +1122,24 @@ void MegaCmdGlobalTransferListener::onTransferFinish(MegaApi* api, MegaTransfer 
     completedTransfersMutex.unlock();
 }
 
-void MegaCmdGlobalTransferListener::onTransferStart(MegaApi* api, MegaTransfer *transfer) {};
-void MegaCmdGlobalTransferListener::onTransferUpdate(MegaApi* api, MegaTransfer *transfer) {};
+void MegaCmdGlobalTransferListener::onTransferStart(MegaApi* api, MegaTransfer *transfer)
+{
+#ifdef HAVE_DOWNLOADS_COMMAND
+    if (transfer->getType() == transfer->TYPE_DOWNLOAD && ConfigurationManager::getConfigurationValue("downloads_tracking_enabled", false))
+    {
+        DownloadsManager::Instance().onTransferStart(api, transfer);
+    }
+#endif
+}
+void MegaCmdGlobalTransferListener::onTransferUpdate(MegaApi* api, MegaTransfer *transfer)
+{
+#ifdef HAVE_DOWNLOADS_COMMAND
+    if (transfer->getType() == transfer->TYPE_DOWNLOAD && ConfigurationManager::getConfigurationValue("downloads_tracking_enabled", false))
+    {
+        DownloadsManager::Instance().onTransferUpdate(api, transfer);
+    }
+#endif
+}
 void MegaCmdGlobalTransferListener::onTransferTemporaryError(MegaApi *api, MegaTransfer *transfer, MegaError* e)
 {
     if (e && e->getErrorCode() == MegaError::API_EOVERQUOTA && e->getValue())
@@ -1075,7 +1156,14 @@ void MegaCmdGlobalTransferListener::onTransferTemporaryError(MegaApi *api, MegaT
         sandboxCMD->timeOfOverquota = m_time(NULL);
         sandboxCMD->secondsOverQuota=e->getValue();
     }
-};
+
+#ifdef HAVE_DOWNLOADS_COMMAND
+    if (transfer->getType() == transfer->TYPE_DOWNLOAD && ConfigurationManager::getConfigurationValue("downloads_tracking_enabled", false))
+    {
+        DownloadsManager::Instance().onTransferUpdate(api, transfer);
+    }
+#endif
+}
 
 bool MegaCmdGlobalTransferListener::onTransferData(MegaApi *api, MegaTransfer *transfer, char *buffer, size_t size) {return false;};
 
@@ -1106,4 +1194,55 @@ bool MegaCmdCatTransferListener::onTransferData(MegaApi *api, MegaTransfer *tran
 
     return true;
 }
+
+ATransferListener::ATransferListener(const std::shared_ptr<MegaCmdMultiTransferListener> &mMultiTransferListener, const std::string &path)
+    : mMultiTransferListener(mMultiTransferListener), mPath(path)
+{
+    assert(mMultiTransferListener);
+}
+
+ATransferListener::~ATransferListener()
+{
+
+}
+
+
+void ATransferListener::onTransferStart(MegaApi *api, MegaTransfer *transfer)
+{
+    auto tag = transfer->getTag();
+#ifdef HAVE_DOWNLOADS_COMMAND
+    if (transfer->getType() == transfer->TYPE_DOWNLOAD && ConfigurationManager::getConfigurationValue("downloads_tracking_enabled", false))
+    {
+        DownloadsManager::Instance().addNewTopLevelTransfer(api, transfer, tag, mPath);
+    }
+#endif
+    mMultiTransferListener->onTransferStarted(mPath, tag);
+    mMultiTransferListener->onTransferStart(api, transfer);
+}
+
+
+void ATransferListener::onTransferFinish(MegaApi *api, MegaTransfer *transfer, MegaError *e)
+{
+    static_cast<MegaTransferListener *>(mMultiTransferListener.get())->onTransferFinish(api, transfer, e);
+    delete this;
+}
+
+
+void ATransferListener::onTransferUpdate(MegaApi *api, MegaTransfer *transfer)
+{
+    mMultiTransferListener->onTransferUpdate(api, transfer);
+}
+
+
+void ATransferListener::onTransferTemporaryError(MegaApi *api, MegaTransfer *transfer, MegaError *e)
+{
+    mMultiTransferListener->onTransferTemporaryError(api, transfer, e);
+}
+
+
+bool ATransferListener::onTransferData(MegaApi *api, MegaTransfer *transfer, char *buffer, size_t size)
+{
+    return mMultiTransferListener->onTransferData(api, transfer, buffer, size);
+}
+
 } //end namespace

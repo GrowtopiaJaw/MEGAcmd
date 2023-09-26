@@ -45,6 +45,7 @@ endif (ENABLE_BACKUP)
 add_executable(mega-cmd-server
     "${ProjectDir}/src/megacmd.cpp"
     "${ProjectDir}/src/megacmdexecuter.cpp"
+    "${ProjectDir}/src/megacmdtransfermanager.cpp"
     "${ProjectDir}/src/megacmdlogger.cpp"
     "${ProjectDir}/src/megacmdsandbox.cpp"
     "${ProjectDir}/src/megacmdutils.cpp"
@@ -79,6 +80,11 @@ add_executable(mega-cmd-updater WIN32
     "${ProjectDir}/src/updater/UpdateTask.cpp"
     "${ProjectDir}/contrib/QtCreator/MEGAcmd/MEGAcmdUpdater/icon.rc"
 )
+
+if (APPLE)
+    target_sources(mega-cmd-server  PRIVATE "${ProjectDir}/src/megacmdplatform.mm")
+    target_sources(mega-cmd-updater PRIVATE "${ProjectDir}/src/updater/MacUtils.mm")
+endif ()
 
 if (WIN32)
 set_target_properties(mega-exec PROPERTIES OUTPUT_NAME MEGAclient)

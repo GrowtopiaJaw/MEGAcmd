@@ -24,6 +24,9 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <dirent.h>
+
+#include <sys/utsname.h>
+#include <fstream>
 #endif
 
 #include "UpdateTask.h"
@@ -69,14 +72,14 @@ void utf8ToUtf16(const char* utf8data, string* utf16string)
         return;
     }
 
-    int size = strlen(utf8data) + 1;
+    DWORD size = (DWORD)strlen(utf8data) + 1;
 
     // make space for the worst case
     utf16string->resize(size * sizeof(wchar_t));
 
     // resize to actual result
     utf16string->resize(sizeof(wchar_t) * MultiByteToWideChar(CP_UTF8, 0, utf8data, size, (wchar_t*)utf16string->data(),
-                                                              utf16string->size() / sizeof(wchar_t) + 1));
+                                                              int(utf16string->size() / sizeof(wchar_t) + 1)));
     if (utf16string->size())
     {
         utf16string->resize(utf16string->size() - 1);
@@ -100,7 +103,7 @@ void utf16ToUtf8(const wchar_t* utf16data, int utf16size, string* utf8string)
     utf8string->resize(WideCharToMultiByte(CP_UTF8, 0, utf16data,
         utf16size,
         (char*)utf8string->data(),
-        utf8string->size() + 1,
+        int(utf8string->size()) + 1,
         NULL, NULL));
 }
 
@@ -149,7 +152,7 @@ int64_t mega_size(const char *path)
 
     if (!GetFileAttributesExW((LPCWSTR)wpath.data(), GetFileExInfoStandard, (LPVOID)&fad))
     {
-        DWORD e = GetLastError();
+        //DWORD e = GetLastError();
         return -1;
     }
     return ((int64_t)fad.nFileSizeHigh << 32) + (int64_t)fad.nFileSizeLow;
@@ -477,6 +480,154 @@ bool UpdateTask::checkForUpdates(bool emergencyUpdater, bool doNotInstall)
     }
 }
 
+#ifndef WIN32
+
+
+#ifdef __linux__
+string &ltrimEtcProperty(string &s, const char &c)
+{
+    size_t pos = s.find_first_not_of(c);
+    s = s.substr(pos == string::npos ? s.length() : pos, s.length());
+    return s;
+}
+
+string &rtrimEtcProperty(string &s, const char &c)
+{
+    size_t pos = s.find_last_not_of(c);
+    if (pos != string::npos)
+    {
+        pos++;
+    }
+    s = s.substr(0, pos);
+    return s;
+}
+
+string &trimEtcproperty(string &what)
+{
+    rtrimEtcProperty(what,' ');
+    ltrimEtcProperty(what,' ');
+    if (what.size() > 1)
+    {
+        if (what[0] == '\'' || what[0] == '"')
+        {
+            rtrimEtcProperty(what, what[0]);
+            ltrimEtcProperty(what, what[0]);
+        }
+    }
+    return what;
+}
+
+string getPropertyFromEtcFile(const char *configFile, const char *propertyName)
+{
+    std::ifstream infile(configFile);
+    string line;
+
+    while (getline(infile, line))
+    {
+        if (line.length() > 0 && line[0] != '#')
+        {
+            if (!strlen(propertyName)) //if empty return first line
+            {
+                return trimEtcproperty(line);
+            }
+            string key, value;
+            size_t pos = line.find("=");
+            if (pos != string::npos && ((pos + 1) < line.size()))
+            {
+                key = line.substr(0, pos);
+                rtrimEtcProperty(key, ' ');
+
+                if (!strcmp(key.c_str(), propertyName))
+                {
+                    value = line.substr(pos + 1);
+                    return trimEtcproperty(value);
+                }
+            }
+        }
+    }
+
+    return string();
+}
+
+string getDistro()
+{
+    string distro;
+    distro = getPropertyFromEtcFile("/etc/lsb-release", "DISTRIB_ID");
+    if (!distro.size())
+    {
+        distro = getPropertyFromEtcFile("/etc/os-release", "ID");
+    }
+    if (!distro.size())
+    {
+        distro = getPropertyFromEtcFile("/etc/redhat-release", "");
+    }
+    if (!distro.size())
+    {
+        distro = getPropertyFromEtcFile("/etc/debian-release", "");
+    }
+    if (distro.size() > 20)
+    {
+        distro = distro.substr(0, 20);
+    }
+    transform(distro.begin(), distro.end(), distro.begin(), ::tolower);
+    return distro;
+}
+
+string getDistroVersion()
+{
+    string version;
+    version = getPropertyFromEtcFile("/etc/lsb-release", "DISTRIB_RELEASE");
+    if (!version.size())
+    {
+        version = getPropertyFromEtcFile("/etc/os-release", "VERSION_ID");
+    }
+    if (version.size() > 10)
+    {
+        version = version.substr(0, 10);
+    }
+    transform(version.begin(), version.end(), version.begin(), ::tolower);
+    return version;
+}
+#endif
+
+string osversion()
+{
+    string toret;
+    auto u = &toret;
+#ifdef __linux__
+    string distro = getDistro();
+    if (distro.size())
+    {
+        u->append(distro);
+        string distroversion = getDistroVersion();
+        if (distroversion.size())
+        {
+            u->append(" ");
+            u->append(distroversion);
+            u->append("/");
+        }
+        else
+        {
+            u->append("/");
+        }
+    }
+#endif
+
+    utsname uts;
+
+    if (!uname(&uts))
+    {
+        u->append(uts.sysname);
+        u->append(" ");
+        u->append(uts.release);
+        u->append(" ");
+        u->append(uts.machine);
+    }
+    return toret;
+}
+#endif
+
+
 bool UpdateTask::downloadFile(string url, string dstPath)
 {
     LOG(LOG_LEVEL_INFO, "Downloading updated file from: %s",  url.c_str());
@@ -521,6 +672,10 @@ bool UpdateTask::downloadFile(string url, string dstPath)
     }
 #else
     string dlcommand = "curl ";
+    dlcommand.append(" -A ");
+    dlcommand.append(" \"MEGAcmdUpdater ");
+    dlcommand.append(osversion());
+    dlcommand.append("\" ");
     dlcommand.append(url.c_str());
     dlcommand.append(" -o ");
     dlcommand.append(dstPath);
@@ -624,9 +779,9 @@ bool UpdateTask::fileExist(const char *path)
     return (mega_access(path) != -1);
 }
 
-void UpdateTask::addToSignature(const char* bytes, int length)
+void UpdateTask::addToSignature(const char* bytes, size_t length)
 {
-    signatureChecker->add(bytes, length);
+    signatureChecker->add(bytes, int(length));
 }
 
 void UpdateTask::initSignature()
@@ -698,10 +853,10 @@ bool UpdateTask::performUpdate()
     return true;
 }
 
-void UpdateTask::rollbackUpdate(int fileNum)
+void UpdateTask::rollbackUpdate(size_t fileNum)
 {
     LOG(LOG_LEVEL_INFO, "Uninstalling update...");
-    for (int i = fileNum; i >= 0; i--)
+    for (size_t i = fileNum; i >= 0; i--)
     {
         string origFile = appFolder + localPaths[i];
         mega_rename(origFile.c_str(), (updateFolder + localPaths[i]).c_str());
@@ -842,7 +997,7 @@ bool UpdateTask::alreadyExists(string absolutePath, string fileSignature)
         return false;
     }
 
-    tmpHash.add(buffer, sizeRead);
+    tmpHash.add(buffer, unsigned(sizeRead));
     fclose(pFile);
     free(buffer);
 
@@ -885,9 +1040,9 @@ void UpdateTask::emptydirlocal(string* name, dev_t basedev)
     dev_t currentdev;
 
     int added = 0;
-    if (name->size() > sizeof(wchar_t) && !memcmp(name->data() + name->size() - sizeof(wchar_t), (char*)L":", sizeof(wchar_t)))
+    if (name->size() > sizeof(wchar_t) && !memcmp(name->data() + name->size() - sizeof(wchar_t), (char*)(void*)L":", sizeof(wchar_t)))
     {
-        name->append((char*)L"\\", sizeof(wchar_t));
+        name->append((char*)(void*)L"\\", sizeof(wchar_t));
         added = sizeof(wchar_t);
     }
 
@@ -950,7 +1105,7 @@ void UpdateTask::emptydirlocal(string* name, dev_t basedev)
     {
         // iterate over children and delete
         removed = false;
-        name->append((char*)L"\\*", 5);
+        name->append((char*)(void*)L"\\*", 5);
         WIN32_FIND_DATAW ffd;
     #ifdef WINDOWS_PHONE
         hFind = FindFirstFileExW((LPCWSTR)name->data(), FindExInfoBasic, &ffd, FindExSearchNameMatch, NULL, 0);
@@ -973,7 +1128,7 @@ void UpdateTask::emptydirlocal(string* name, dev_t basedev)
                     || ffd.cFileName[2]))))
             {
                 string childname = *name;
-                childname.append((char*)L"\\", 2);
+                childname.append((char*)(void*)L"\\", 2);
                 childname.append((char*)ffd.cFileName, sizeof(wchar_t) * wcslen(ffd.cFileName));
                 if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
                 {
@@ -1076,13 +1231,13 @@ void UpdateTask::emptydirlocal(string* name, dev_t basedev)
 SignatureChecker::SignatureChecker(const char *base64Key)
 {
     string pubks;
-    int len = strlen(base64Key)/4*3+3;
+    size_t len = strlen(base64Key)/4*3+3;
     pubks.resize(len);
-    pubks.resize(Base64::atob(base64Key, (byte *)pubks.data(), len));
+    pubks.resize(Base64::atob(base64Key, (byte *)pubks.data(), int(len)));
 
 
     byte *data = (byte*)pubks.data();
-    int datalen = pubks.size();
+    int datalen = int(pubks.size());
 
     int p, i, n;
     p = 0;
@@ -1234,9 +1389,9 @@ unsigned char Base64::from64(byte c)
 int Base64::atob(const string &in, string &out)
 {
     out.resize(in.size() * 3 / 4 + 3);
-    out.resize(Base64::atob(in.data(), (byte *) out.data(), out.size()));
+    out.resize(Base64::atob(in.data(), (byte *) out.data(), int(out.size())));
 
-    return out.size();
+    return int(out.size());
 }
 
 int Base64::atob(const char* a, byte* b, int blen)
@@ -1278,16 +1433,14 @@ int Base64::atob(const char* a, byte* b, int blen)
 
         b[p++] = (c[2] << 6) | c[3];
     }
-
-    return p;
 }
 
 int Base64::btoa(const string &in, string &out)
 {
     out.resize(in.size() * 4 / 3 + 4);
-    out.resize(Base64::btoa((const byte*) in.data(), in.size(), (char *) out.data()));
+    out.resize(Base64::btoa((const byte*) in.data(), int(in.size()), (char *) out.data()));
 
-    return out.size();
+    return int(out.size());
 }
 
 int Base64::btoa(const byte* b, int blen, char* a)

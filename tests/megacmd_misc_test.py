@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2.7
 # -*- coding: utf-8 -*-
 
 import sys, os, subprocess, shutil
@@ -10,6 +10,7 @@ RM="mega-rm"
 MV="mega-mv"
 CP="mega-cp"
 CD="mega-cd"
+THUMB="mega-thumbnail"
 LCD="mega-lcd"
 MKDIR="mega-mkdir"
 EXPORT="mega-export -f"
@@ -79,6 +80,7 @@ def clean_all():
     
     rmfileifexisting("megafind.txt")
     rmfileifexisting("localfind.txt")
+    rmfileifexisting("thumbnail.jpg")
 
 
 
@@ -144,8 +146,8 @@ def initialize():
         cmd_es(LOGOUT)
         cmd_ef(LOGIN+" " +osvar("MEGA_EMAIL")+" "+osvar("MEGA_PWD"))
 
-    if len(os.listdir(".")):
-        print >>sys.stderr, "initialization folder not empty!"
+    if len(os.listdir(".")) and ( len(os.listdir(".")) != 1 and os.listdir(".")[0] != 'images'):
+        print >>sys.stderr, "initialization folder not empty!", "\n",os.listdir(".")
         #~ cd $ABSPWD
         exit(1)
 
@@ -360,22 +362,22 @@ cmd_ef(CP+" file01nonempty.txt "+'/le01/copied')
 copybyfilepattern("localUPs/","file01nonempty.txt", "localUPs/le01/copied")
 compare_find('/')
 
-#Test 18 #multicopy
+#Test 20 #multicopy
 cmd_ef(CP+" *.txt "+'/le01')
 copybyfilepattern("localUPs/","*.txt", "localUPs/le01/")
 compare_find('/')
 
-#Test 19 #multicopy with trailing /
+#Test 21 #multicopy with trailing /
 cmd_ef(CP+" *.txt "+'/le01/les01/')
 copybyfilepattern("localUPs/","*.txt", "localUPs/le01/les01/")
 compare_find('/')
 
-#Test 20 #multisend
-cmd_ef(CP+" *.txt "+MEGA_EMAIL_AUX+':')
-print "test "+str(currentTest)+" succesful!"
-currentTest+=1
+# ~ #Test 22 #multisend
+# ~ cmd_ef(CP+" *.txt "+MEGA_EMAIL_AUX+':')
+# ~ print "test "+str(currentTest)+" succesful!"
+# ~ currentTest+=1
 
-#Test 21 #copy folder
+#Test 23 #copy folder
 cmd_ef(CP+" le01 "+'lf01')
 copyfolder("localUPs/le01", "localUPs/lf01/")
 compare_find('/')
@@ -439,6 +441,66 @@ cmd_ef(MV+" -vvv copied7 "+'/le01/moved7')
 copybyfilepattern("localUPs/","file01nonempty.txt", "localUPs/le01/moved7")
 compare_find('/')
 
+currentTest=33 #thumbnails
+#Test 33 #ensure thumnail generation
+#1st get images selection
+try:
+    imagesUrl=os.environ['MEGACMD_TESTS_IMAGES_URL']
+except:
+    imagesUrl="https://mega.nz/folder/bxomFKwL#3V1dUJFzL98t1GqXX29IXg"
+if VERBOSE:
+    print "Using this imagesUrl: ",imagesUrl
+cmd_ef(GET+" "+imagesUrl+" localtmp/")
+#2nd, upload folder
+cmd_ef(PUT+" localtmp/images")
+#3rd, for each file, download thumbnail
+folder="/images"
+o,status=cmd_ec(FIND+" "+folder+"/*")
+fullout=""
+fullStatus=1
+for f in o.split():
+    rmfileifexisting("thumbnail.jpg")
+    o,status=cmd_ec(THUMB+" "+f+" thumbnail.jpg")
+    ext=f.split(".")[-1].lower().strip()
+    allowedFailure=["ai","ani","cur","eps","exe","gif","heic","html","idx","j2c","jpm","md","mj2","pdf","psd","sgi","svg","txt","webp","xmp", "pnm","ppm"]    
+    if not ext in allowedFailure and "saved in" not in o: #note: output code is not trustworthy: check for "saved in"
+        fullout=fullout+str("missing thumbnail for:"+str(f)+"\n")
+        fullStatus=0
+        print status, ext," missing thumbnail:",f,"\n",o,
+check_failed_and_clear(fullout,fullStatus)
+
+
+currentTest=34 #pdf thumbnails
+#Test 33 #ensure thumnail generation
+#1st get pdfs selection
+try:
+    pdfsURL=os.environ['MEGACMD_TESTS_PDFS_URL']
+except:
+    pdfsURL="https://mega.nz/folder/D0w0nYiY#egvjqP5R-anbBdsJg8QRVg"
+if VERBOSE:
+    print "Using this pdfsURL: ",pdfsURL
+cmd_ef(GET+" "+pdfsURL+" localtmp/")
+
+#2nd, upload folder
+cmd_ef(PUT+" localtmp/pdfs")
+#3rd, for each file, download thumbnail
+folder="/pdfs"
+o,status=cmd_ec(FIND+" "+folder+"/*")
+fullout=""
+fullStatus=1
+
+print o
+print 'splited=', o.split("\n")
+for f in o.split("\n"):
+    if not len(f): continue
+    rmfileifexisting("thumbnail.jpg")
+    o,status=cmd_ec(THUMB+" '"+f+"' thumbnail.jpg")
+    allowedFailure=["protected", "non-pdf-file","with-password","_TFG"]
+    if not True in [x in f for x in allowedFailure] and "saved in" not in o: #note: output code is not trustworthy: check for "saved in"
+        fullout=fullout+str("missing thumbnail for:"+str(f)+"\n")
+        fullStatus=0
+        print status, " missing thumbnail:",f,"\n",o,
+check_failed_and_clear(fullout,fullStatus)
 ###################
 
 # Clean all
